@@ -1,0 +1,23 @@
+version: "3.9"
+services:
+  dev:
+    image: devcontainers/cuda:13.1-devel
+    network_mode: host
+    cap_add:
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: "all"
+              capabilities: [gpu]
+    volumes:
+      - ${SOURCE_DIR}:/workspace
+      - dev-home:/home/ubuntu
+    command: sleep infinity
+volumes:
+  dev-home:
