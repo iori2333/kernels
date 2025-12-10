@@ -9,19 +9,21 @@ INV_LOG2 = 1.0 / math.log(2)
 
 @ct.kernel
 def flash_sdpa(
-    q: ct.Array,  # [bs, h, s, d]
-    k: ct.Array,  # [bs, h_kv, s_kv, d]
-    v: ct.Array,  # [bs, h_kv, s_kv, d]
-    o: ct.Array,  # [bs, h, s, d]
+    q: ct.Array,  # [b, h, s, d]
+    k: ct.Array,  # [b, h_kv, s_kv, d]
+    v: ct.Array,  # [b, h_kv, s_kv, d]
+    o: ct.Array,  # [b, h, s, d]
     qk_scale: float,
     groups: ct.Constant[int],
     br: ct.Constant[int],
     bc: ct.Constant[int],
+    h: ct.Constant[int],
     d: ct.Constant[int],
 ):
-    bid_bs = ct.bid(0)
-    bid_h = ct.bid(1)
-    bid_s = ct.bid(2)
+    bid_b_h = ct.bid(0)
+    bid_b = bid_b_h // h
+    bid_h = bid_b_h % h
+    bid_s = ct.bid(1)
     bid_hkv = bid_h // groups
 
     # trick: use log2 instead of loge
@@ -35,7 +37,7 @@ def flash_sdpa(
     # load q_i
     q_i = ct.load(
         q,
-        index=(bid_bs, bid_h, bid_s, 0),
+        index=(bid_b, bid_h, bid_s, 0),
         shape=(1, 1, br, d),
     ).reshape((br, d))
 
@@ -44,14 +46,14 @@ def flash_sdpa(
         # load (k_j)^T and v_j
         k_jt = ct.load(
             k,
-            index=(bid_bs, bid_hkv, 0, j),
+            index=(bid_b, bid_hkv, 0, j),
             shape=(1, 1, d, bc),
             order=(0, 1, 3, 2),  # transpose here
         ).reshape((d, bc))
 
         v_j = ct.load(
             v,
-            index=(bid_bs, bid_hkv, j, 0),
+            index=(bid_b, bid_hkv, j, 0),
             shape=(1, 1, bc, d),
         ).reshape((bc, d))
 
@@ -78,18 +80,19 @@ def flash_sdpa(
     # scale o_i
     o_i = o_i / l_i
     o_i = o_i.reshape((1, 1, br, d)).astype(o.dtype)
-    ct.store(o, index=(bid_bs, bid_h, bid_s, 0), tile=o_i)
+    ct.store(o, index=(bid_b, bid_h, bid_s, 0), tile=o_i)
 
 
 def launch_flash_sdpa(
     q: torch.Tensor,
     k: torch.Tensor,
     v: torch.Tensor,
-    br: int = 32,
-    bc: int = 32,
+    o: torch.Tensor | None = None,
     qk_scale: float | None = None,
     is_causal: bool = False,
     enable_gqa: bool = False,
+    br: int = 64,
+    bc: int = 64,
 ) -> torch.Tensor:
     assert not is_causal, "is_causal not implemented yet"
 
@@ -112,14 +115,16 @@ def launch_flash_sdpa(
 
     if qk_scale is None:
         qk_scale = 1.0 / math.sqrt(d)
-    o = torch.empty_like(q)
 
-    grid = (bs, h, int(ct.cdiv(s, br)))
+    if o is None:
+        o = torch.empty_like(q)
+
+    grid = (bs * h, math.ceil(s / br))
     ct.launch(
         torch.cuda.current_stream(),
         grid,
         flash_sdpa,
-        (q, k, v, o, qk_scale, groups, br, bc, d),
+        (q, k, v, o, qk_scale, groups, br, bc, h, d),
     )
 
     return o
