@@ -21,7 +21,7 @@ def flash_sdpa(
     bc: tl.constexpr,
     b: tl.constexpr,
     h: tl.constexpr,
-    s_q: tl.constexpr,
+    s: tl.constexpr,
     s_kv: tl.constexpr,
     d: tl.constexpr,
     input_dtype: tl.constexpr,
@@ -33,47 +33,47 @@ def flash_sdpa(
 ):
     pid_b_h = tl.program_id(0)
     pid_b = pid_b_h // h
-    pid_h = pid_b_h % h
     pid_s = tl.program_id(1)
+    pid_h = pid_b_h % h
     pid_hkv = pid_h // groups
-    hkv = h // groups
+    h_kv = h // groups
 
     qk_scale = qk_scale * INV_LOG2
 
     pq = tl.make_block_ptr(
         q,
-        shape=(b, h, s_q, d),
+        shape=(b, s, h, d),
         strides=q_strides,
-        offsets=(pid_b, pid_h, pid_s, 0),
-        block_shape=(1, 1, br, d),
+        offsets=(pid_b, pid_s, pid_h, 0),
+        block_shape=(1, br, 1, d),
         order=(0, 1, 2, 3),
     )
 
     po = tl.make_block_ptr(
         o,
-        shape=(b, h, s_q, d),
+        shape=(b, s, h, d),
         strides=o_strides,
-        offsets=(pid_b, pid_h, pid_s, 0),
-        block_shape=(1, 1, br, d),
+        offsets=(pid_b, pid_s, pid_h, 0),
+        block_shape=(1, br, 1, d),
         order=(0, 1, 2, 3),
     )
 
-    kt_strides = (k_strides[0], k_strides[1], k_strides[3], k_strides[2])
+    kt_strides = (k_strides[0], k_strides[3], k_strides[2], k_strides[1])
     pk = tl.make_block_ptr(
         k,
-        shape=(b, hkv, d, s_kv),
+        shape=(b, d, h_kv, s_kv),
         strides=kt_strides,
-        offsets=(pid_b, pid_hkv, 0, 0),
-        block_shape=(1, 1, d, bc),
-        order=(0, 1, 3, 2),
+        offsets=(pid_b, 0, pid_hkv, 0),
+        block_shape=(1, d, 1, bc),
+        order=(0, 3, 2, 1),
     )
 
     pv = tl.make_block_ptr(
         v,
-        shape=(b, hkv, s_kv, d),
+        shape=(b, s_kv, h_kv, d),
         strides=v_strides,
-        offsets=(pid_b, pid_hkv, 0, 0),
-        block_shape=(1, 1, bc, d),
+        offsets=(pid_b, 0, pid_hkv, 0),
+        block_shape=(1, bc, 1, d),
         order=(0, 1, 2, 3),
     )
 
@@ -87,10 +87,10 @@ def flash_sdpa(
     for j in range(t_c):
         # load (k_j)^T and v_j
         pk_jt = pk.advance((0, 0, 0, j))
-        k_jt = tl.load(pk_jt, boundary_check=(2,), padding_option="zero").reshape(d, bc)
+        k_jt = tl.load(pk_jt, boundary_check=(3,), padding_option="zero").reshape(d, bc)
 
-        pv_j = pv.advance((0, 0, j, 0))
-        v_j = tl.load(pv_j, boundary_check=(2,), padding_option="zero").reshape(bc, d)
+        pv_j = pv.advance((0, j, 0, 0))
+        v_j = tl.load(pv_j, boundary_check=(1,), padding_option="zero").reshape(bc, d)
 
         # calculate s_ij = q_i @ (k_j)^T
         s_ij = tl.zeros((br, bc), dtype=tl.float32)
@@ -113,7 +113,7 @@ def flash_sdpa(
         m_i = m_ij
 
     o_i = o_i / l_i
-    o_i = o_i.cast(output_dtype).reshape(1, 1, br, d)
+    o_i = o_i.cast(output_dtype).reshape(1, br, 1, d)
     tl.store(po, o_i)
 
 
@@ -136,8 +136,8 @@ def launch_flash_sdpa(
 
     assert q.device == k.device == v.device, "input tensors must be on same device"
 
-    b, h, s, d = q.shape
-    _, h_kv, s_kv, _ = k.shape
+    b, s, h, d = q.shape
+    _, s_kv, h_kv, _ = k.shape
 
     assert h % h_kv == 0, "q_heads must be divisible by kv_heads"
 

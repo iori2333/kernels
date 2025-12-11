@@ -9,10 +9,10 @@ INV_LOG2 = 1.0 / math.log(2)
 
 @ct.kernel
 def flash_sdpa(
-    q: ct.Array,  # [b, h, s, d]
-    k: ct.Array,  # [b, h_kv, s_kv, d]
-    v: ct.Array,  # [b, h_kv, s_kv, d]
-    o: ct.Array,  # [b, h, s, d]
+    q: ct.Array,  # [b, s, h, d]
+    k: ct.Array,  # [b, s_kv, h_kv, d]
+    v: ct.Array,  # [b, s_kv, h_kv, d]
+    o: ct.Array,  # [b, s, h, d]
     qk_scale: float,
     groups: ct.Constant[int],
     br: ct.Constant[int],
@@ -22,8 +22,8 @@ def flash_sdpa(
 ):
     bid_b_h = ct.bid(0)
     bid_b = bid_b_h // h
-    bid_h = bid_b_h % h
     bid_s = ct.bid(1)
+    bid_h = bid_b_h % h
     bid_hkv = bid_h // groups
 
     # trick: use log2 instead of loge
@@ -37,24 +37,24 @@ def flash_sdpa(
     # load q_i
     q_i = ct.load(
         q,
-        index=(bid_b, bid_h, bid_s, 0),
-        shape=(1, 1, br, d),
+        index=(bid_b, bid_s, bid_h, 0),
+        shape=(1, br, 1, d),
     ).reshape((br, d))
 
-    t_c = ct.cdiv(k.shape[2], bc)
+    t_c = ct.cdiv(k.shape[1], bc)
     for j in range(t_c):  # type: ignore
         # load (k_j)^T and v_j
         k_jt = ct.load(
             k,
-            index=(bid_b, bid_hkv, 0, j),
-            shape=(1, 1, d, bc),
-            order=(0, 1, 3, 2),  # transpose here
+            index=(bid_b, 0, bid_hkv, j),
+            shape=(1, d, 1, bc),
+            order=(0, 3, 2, 1),  # transpose here
         ).reshape((d, bc))
 
         v_j = ct.load(
             v,
-            index=(bid_b, bid_hkv, j, 0),
-            shape=(1, 1, bc, d),
+            index=(bid_b, j, bid_hkv, 0),
+            shape=(1, bc, 1, d),
         ).reshape((bc, d))
 
         # calculate s_ij = q_i @ (k_j)^T
@@ -79,8 +79,8 @@ def flash_sdpa(
 
     # scale o_i
     o_i = o_i / l_i
-    o_i = o_i.reshape((1, 1, br, d)).astype(o.dtype)
-    ct.store(o, index=(bid_b, bid_h, bid_s, 0), tile=o_i)
+    o_i = o_i.reshape((1, br, 1, d)).astype(o.dtype)
+    ct.store(o, index=(bid_b, bid_s, bid_h, 0), tile=o_i)
 
 
 def launch_flash_sdpa(
@@ -103,8 +103,8 @@ def launch_flash_sdpa(
     assert q.device == k.device == v.device, "input tensors must be on same device"
     assert q.is_cuda, "input tensors must be CUDA"
 
-    bs, h, s, d = q.shape
-    _, h_kv, s_kv, _ = k.shape
+    bs, s, h, d = q.shape
+    _, s_kv, h_kv, _ = k.shape
 
     assert h % h_kv == 0, "q_heads must be divisible by kv_heads"
 

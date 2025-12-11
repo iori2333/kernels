@@ -22,13 +22,14 @@ def benchmark_flash_sdpa(
 ):
     h_kv = h // groups
 
-    q = torch.randn((b, h, s, d), device=device).to(dtype)
-    k = torch.randn((b, h_kv, s_kv, d), device=device).to(dtype)
-    v = torch.randn((b, h_kv, s_kv, d), device=device).to(dtype)
+    q = torch.randn((b, s, h, d), device=device).to(dtype)
+    o = torch.randn((b, s, h, d), device=device).to(dtype)
+    k = torch.randn((b, s_kv, h_kv, d), device=device).to(dtype)
+    v = torch.randn((b, s_kv, h_kv, d), device=device).to(dtype)
 
     def do_test():
         tic_ns = perf_counter_ns()
-        r = launcher(q, k, v, enable_gqa=True)
+        r = launcher(q, k, v, o, enable_gqa=True)
         torch.cuda.synchronize()
         toc_ns = perf_counter_ns()
 
@@ -37,15 +38,27 @@ def benchmark_flash_sdpa(
     return do_test
 
 
-def launch_torch_flash_attn(q, k, v, is_causal=False, enable_gqa=False):
+def launch_torch_flash_attn(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    is_causal: bool = False,
+    enable_gqa: bool = False,
+):
+    # change [b, s, h, d] to [b, h, s, d]
+    q = q.transpose(1, 2)
+    k = k.transpose(1, 2)
+    v = v.transpose(1, 2)
     with sdpa_kernel(backends=SDPBackend.FLASH_ATTENTION):
-        return scaled_dot_product_attention(
+        o = scaled_dot_product_attention(
             q,
             k,
             v,
             is_causal=is_causal,
             enable_gqa=enable_gqa,
         )
+    o = o.transpose(1, 2)
+    return o
 
 
 def test():
@@ -55,9 +68,9 @@ def test():
     dtype = torch.float16
     device = torch.device("cuda:0")
 
-    q = torch.randn((b, h, s, d), device=device).to(dtype)
-    k = torch.randn((b, h_kv, s_kv, d), device=device).to(dtype)
-    v = torch.randn((b, h_kv, s_kv, d), device=device).to(dtype)
+    q = torch.randn((b, s, h, d), device=device).to(dtype)
+    k = torch.randn((b, s_kv, h_kv, d), device=device).to(dtype)
+    v = torch.randn((b, s_kv, h_kv, d), device=device).to(dtype)
 
     expected = launch_torch_flash_attn(q, k, v, is_causal=False, enable_gqa=True)
     o_cutile = cutile_flash_sdpa(
@@ -91,23 +104,6 @@ def bench():
     device = torch.device("cuda:0")
 
     bench_fn(
-        "torch_flash_sdpa_bf16",
-        50000,
-        500,
-        benchmark_flash_sdpa(
-            launch_torch_flash_attn,
-            bs,
-            h,
-            s,
-            s_kv,
-            d,
-            groups,
-            dtype=torch.bfloat16,
-            device=device,
-        ),
-    )
-
-    bench_fn(
         "cutile_flash_sdpa_bf16",
         50000,
         500,
@@ -137,6 +133,40 @@ def bench():
             d,
             groups,
             dtype=torch.bfloat16,
+            device=device,
+        ),
+    )
+
+    bench_fn(
+        "cutile_flash_sdpa_fp8",
+        50000,
+        500,
+        benchmark_flash_sdpa(
+            cutile_flash_sdpa,
+            bs,
+            h,
+            s,
+            s_kv,
+            d,
+            groups,
+            dtype=torch.float8_e4m3fn,
+            device=device,
+        ),
+    )
+
+    bench_fn(
+        "trtion_flash_sdpa_fp8",
+        50000,
+        500,
+        benchmark_flash_sdpa(
+            triton_flash_sdpa,
+            bs,
+            h,
+            s,
+            s_kv,
+            d,
+            groups,
+            dtype=torch.float8_e4m3fn,
             device=device,
         ),
     )
