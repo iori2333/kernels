@@ -82,7 +82,6 @@ def launch_batch_matmul(
 ) -> torch.Tensor:
     assert a.shape[0] == b.shape[0], "inputs must have same batch size"
     assert a.device == b.device, "input tensors must be on same device"
-    assert a.is_cuda, "input tensors must be CUDA"
 
     if result_dtype is None:
         result_dtype = a.dtype

@@ -22,7 +22,6 @@ def vector_add(pa, pb, pr, n: int, tile_size: tl.constexpr):
 def launch_vector_add(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
     assert a.shape == b.shape, "input tensors must have same shape"
     assert a.device == b.device, "input tensors must have same device"
-    assert a.is_cuda, "input tensors must be CUDA"
 
     tile_size = 16
     r = torch.zeros_like(a)
