@@ -44,7 +44,7 @@ def flash_sdpa(
         q,
         shape=(b, s, h, d),
         strides=q_strides,
-        offsets=(pid_b, pid_s, pid_h, 0),
+        offsets=(pid_b, pid_s * br, pid_h, 0),
         block_shape=(1, br, 1, d),
         order=(0, 1, 2, 3),
     )
@@ -53,13 +53,13 @@ def flash_sdpa(
         o,
         shape=(b, s, h, d),
         strides=o_strides,
-        offsets=(pid_b, pid_s, pid_h, 0),
+        offsets=(pid_b, pid_s * br, pid_h, 0),
         block_shape=(1, br, 1, d),
         order=(0, 1, 2, 3),
     )
 
     kt_strides = (k_strides[0], k_strides[3], k_strides[2], k_strides[1])
-    pk = tl.make_block_ptr(
+    pkt = tl.make_block_ptr(
         k,
         shape=(b, d, h_kv, s_kv),
         strides=kt_strides,
@@ -86,10 +86,10 @@ def flash_sdpa(
     t_c = tl.cdiv(s_kv, bc)
     for j in range(t_c):
         # load (k_j)^T and v_j
-        pk_jt = pk.advance((0, 0, 0, j))
+        pk_jt = pkt.advance((0, 0, 0, j * bc))
         k_jt = tl.load(pk_jt, boundary_check=(3,), padding_option="zero").reshape(d, bc)
 
-        pv_j = pv.advance((0, j, 0, 0))
+        pv_j = pv.advance((0, j * bc, 0, 0))
         v_j = tl.load(pv_j, boundary_check=(1,), padding_option="zero").reshape(bc, d)
 
         # calculate s_ij = q_i @ (k_j)^T
