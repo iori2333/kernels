@@ -1,4 +1,4 @@
-FROM nvidia/cuda:13.0.2-cudnn-devel-ubuntu24.04
+FROM nvidia/cuda:13.1.0-devel-ubuntu24.04
 
 RUN sed -i 's@//.*archive.ubuntu.com@//mirrors.ustc.edu.cn@g' /etc/apt/sources.list.d/ubuntu.sources && \
   sed -i 's/security.ubuntu.com/mirrors.ustc.edu.cn/g' /etc/apt/sources.list.d/ubuntu.sources
@@ -15,9 +15,4 @@ RUN pip install --break-system-packages uv
 RUN apt-get update && apt-get install -y \
   build-essential clang clangd cmake \
   wget curl nvtop htop vim && \
-  rm -rf /var/lib/apt/lists/*
-
-# workaround: cuda-13.1 docker image is not yet available
-RUN apt-get update && \
-  apt-get install -y cuda-toolkit-13-1 && \
   rm -rf /var/lib/apt/lists/*
